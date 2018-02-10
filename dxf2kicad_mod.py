@@ -1,6 +1,12 @@
-# refer to http://pythonhosted.org/dxfgrabber/#
-# Note that there must not a line or shape overlapped
+# refer to http://pythonhosted.org/dxfgrabber/
+#
+# Note that there must not be any line or shape overlapped
+
+# Add support for LWPOLYLINE
+# Bob Cousins 2018-02
+
 import dxfgrabber
+from math import *
 import math
 import sys
 
@@ -12,15 +18,15 @@ global fp_poly_head
 global fp_poly_end
 global cur_poly
 
-debug = 0
+debug = False
 distance_error = 1e-2
 
 body_head = "\n\
-(module dxfgeneratedcopper (layer F.Cu) (tedit 0) \n\
-  (fp_text reference G*** (at 0 -4) (layer F.SilkS) hide \n\
+(module dxf2kicad (layer F.Cu) (tedit 0) \n\
+  (fp_text reference REF*** (at 0 -4) (layer F.SilkS) hide \n\
     (effects (font (thickness 0.2))) \n\
   ) \n\
-  (fp_text value value (at 0 4) (layer F.SilkS) hide \n\
+  (fp_text value VAL (at 0 4) (layer F.SilkS) hide \n\
     (effects (font (thickness 0.2))) \n\
   ) "
 
@@ -32,6 +38,10 @@ fp_poly_end_1 = " ) \n\
   (layer "
 
 fp_poly_end_2 = " ) (width 0.001)) "
+
+def dbg (s):
+    if debug:
+        print >>sys.stderr, s
 
 #
 def clip(subjectPolygon, clipPolygon):
@@ -47,7 +57,6 @@ def clip(subjectPolygon, clipPolygon):
       n3 = 1.0 / (dc[0] * dp[1] - dc[1] * dp[0])
 
       p = [(n1*dp[0] - n2*dc[0]) * n3, (n1*dp[1] - n2*dc[1]) * n3]
-      # print "int %f %f" % (p[0], p[1])
       return p
 
    outputList = subjectPolygon
@@ -56,7 +65,6 @@ def clip(subjectPolygon, clipPolygon):
    for clipVertex in clipPolygon:
 
       cp2 = clipVertex
-      # print "clip %f %f  %f %f" % (cp1[0], cp1[1], cp2[0], cp2[1])
 
       inputList = outputList
       outputList = []
@@ -79,7 +87,28 @@ def clip(subjectPolygon, clipPolygon):
       cp1 = cp2
 
    return(outputList)
+
 #
+def find_center(start, end, angle):
+    
+    dx = end[0] - start[0]
+    dy = end[1] - start[1]
+
+    mid = [(start[0] + dx / 2), (start[1] + dy / 2)]
+
+    dlen = math.sqrt(dx * dx + dy * dy)
+    dist = dlen / (2 * math.tan(angle / 2))
+
+    center = [(mid[0] + dist * (dy / dlen)), (mid[1] - dist * (dx / dlen)) ]
+    
+    radius = math.sqrt(dist * dist + (dlen / 2) * (dlen / 2))
+
+    arc_start = math.atan2(start[1] - center[1], start[0] - center[0])
+    arc_end = math.atan2(end[1] - center[1], end[0] - center[0])
+
+    return radius, center[0], center[1], arc_start, arc_end
+#
+
 #
 def get_start_end_pts(entity):
   if "LINE" == entity.dxftype:
@@ -88,17 +117,26 @@ def get_start_end_pts(entity):
     return (entity.start,entity.end)
   elif "ARC" == entity.dxftype:
 
-    start = ( entity.center[0] + entity.radius * math.cos(entity.start_angle/180*math.pi), \
-      entity.center[1] + entity.radius * math.sin(entity.start_angle/180*math.pi), 0)
-    end = ( entity.center[0] + entity.radius * math.cos(entity.end_angle/180*math.pi), \
-      entity.center[1] + entity.radius * math.sin(entity.end_angle/180*math.pi), 0)
+    start = ( entity.center[0] + entity.radius * math.cos(radians(entity.start_angle)),
+              entity.center[1] + entity.radius * math.sin(radians(entity.start_angle)), 0)
+    end = ( entity.center[0] + entity.radius * math.cos(radians(entity.end_angle)),
+            entity.center[1] + entity.radius * math.sin(radians(entity.end_angle)), 0)
     if debug:
       print  >>sys.stderr,"ARC ", start, end
     return (start,end)
+
+  elif entity.dxftype == "LWPOLYLINE":
+    return (entity.points[0], entity.points[-1])
+
   else:
     print >>sys.stderr, "[Error]: Unexpected dxftype ",  entity.dxftype
 
 
+def is_poly (entity):
+    if entity.dxftype in ['LWPOLYLINE']:
+        return True
+    else:
+        return False
 #
 def print_points(ety, direction):
 
@@ -115,21 +153,57 @@ def print_points(ety, direction):
 
     if (ety.start_angle > ety.end_angle):
       ety.end_angle += 360
-    while (1):
-      points.append( (ety.center[0] + ety.radius * math.cos(angle/180*math.pi),
-         ety.center[1] + ety.radius * math.sin(angle/180*math.pi)))
+    while True:
+      points.append( (ety.center[0] + ety.radius * math.cos(radians(angle)),
+                      ety.center[1] + ety.radius * math.sin(radians(angle))) )
       angle +=  step
 
       if (angle > ety.end_angle):
         break
+  elif ety.dxftype == "LWPOLYLINE":
+    for j,point in enumerate(ety.points):
+
+        if j == len(ety.points)-1:
+          break
+
+        #dbg ("%d %2.1f,%2.1f %2.3f" % (j, ety.points[j][0], ety.points[j][1], ety.bulge[j]))
+
+        if ety.bulge[j] == 0:
+            points.append (point)
+        else:
+            if ety.bulge[j] < 0:
+              p2 = ety.points[j]
+              p1 = ety.points[(j+1) % len(ety.points)]
+            else:
+              p1 = ety.points[j]
+              p2 = ety.points[(j+1) % len(ety.points)]
+
+            pl = []
+            if p1[0] != p2[0] and p1[1] != p2[1]:
+                angle = math.atan(ety.bulge[j]) * 4.0
+                radius, xc, yc, start_angle, end_angle = find_center(p1, p2, angle)
+                #dbg ("        r=%2.1f c=(%2.1f,%2.1f) sa=%2.1f ea=%2.1f" % (radius, xc, yc, degrees(start_angle), degrees(end_angle)))
+                if end_angle < start_angle:
+                    end_angle += 2 * math.pi
+                angle = start_angle
+                step = math.radians(1.0/radius)
+                while 1:
+                    pl.append( (xc + radius * math.cos(angle), yc + radius * math.sin(angle)) )
+                    angle += step
+                    if angle > max(start_angle, end_angle):
+                        break
+                #
+                if start_angle < end_angle :
+                    pl.reverse()
+                for p in pl:
+                  points.append (p)
+
   else:
     print "[Error]: Unexpected dxftype ",  entity.dxftype
 
   #
   if direction == -1:
     points.reverse()
-
-  #print "points ", points
 
   for point in points[0:-1]:
     cur_poly.append (point)
@@ -168,7 +242,8 @@ def start_new_shape():
       print >>sys.stderr,"starting point",point_to_close
 
     print_points(current_shape, 1)
-
+  else:
+    pts_next = None
 #
 #
 #
@@ -177,7 +252,7 @@ def start_new_shape():
 dxf = dxfgrabber.readfile(sys.argv[1])
 
 if len(sys.argv)>2 and sys.argv[2] == "-d":
-  debug = 1
+  debug = True
 
 if debug:
   print >>sys.stderr,"DXF version: ", dxf.dxfversion
@@ -201,7 +276,6 @@ for layer in layers:
 
   not_processed_data = set([entity for entity in dxf.entities if entity.layer == layer])
 
-  pts_next = None
   pts = None
 
   start_new_shape()
@@ -209,19 +283,29 @@ for layer in layers:
   if debug :
     print >>sys.stderr,"Not Processed Shape: ", len(not_processed_data)
 
-  while (1):
+  while True:
 
     if pts_next == None:
       if debug:
         print >>sys.stderr, "pts_next is None"
       break #stop
+
+    if is_poly (current_shape):
+        if debug:
+            print >>sys.stderr, "cur is poly"
+
+        start_new_shape()
+        continue
+
+    #
     pts = pts_next
 
     if debug:
       print >>sys.stderr,"Searching entity which is connected with ", pts
+
     #get_start_end_pts(current_shape)
     matched_entity = None
-    pts_next = None
+
     for entity in not_processed_data:
       points = get_start_end_pts(entity)
       x = points[0][0]
@@ -251,8 +335,8 @@ for layer in layers:
       if debug:
         print >>sys.stderr,"No matching found, check if we could close the loop"
 
-      if (math.fabs(point_to_close[0]-pts[0]) < distance_error) and \
-          (math.fabs(point_to_close[1]-pts[1]) < distance_error):
+      if ( (math.fabs(point_to_close[0]-pts[0]) < distance_error) and 
+           (math.fabs(point_to_close[1]-pts[1]) < distance_error) ):
         if debug:
           print >>sys.stderr,"shape closed at", pts
 
