@@ -1,17 +1,56 @@
 # dxf2kicad_mod
-create kicad footprint from dxf file
+Create a KiCad footprint from a DXF file
+
+A generated footprint from [a dxf file](test_data.dxf):
+
+![footprint sample](sample.png)
+
 ## How it works
-it will read the dxf file and find lines and arcs (only supporting thes two types so far) which compose a close-loop grahpic, it converts arcs to lines and connected all lines togethers using fp_poly command in kicad_mod file. each layer is handled seperately, the layer name is converted to layer name in kicad_mod file.
-## limitations
-* it only support lines and arcs so far, but it could fullfill my requirement so far. in the future, I may add more shape support (by converting the shapes to lines)
-* each line must connect with another line or arc's begning or end point very precisely, as the algorithm searches the points location only. if it is overlapped, it will fail to find the connecting point but it will provide some hint to tell you where it is lost, you may check the location if it is overlapped or not connected well.
-* there must not be a line or arc on top another lines in the same layer due to the same reason above. sometimes, people draws two lines on the same location, and it very hard to find where. again the message in command line will provide some hints for you.
+It will read the DXF file and:
 
+- converts arcs to lines
+- find arcs and lines which compose a closed-loop graphic and output a polygon
+- lines which do not form a closed polygon are output as lines
 
-## how to use
-### install python
-### install dxfgrabber
-http://pythonhosted.org/dxfgrabber/#
-### create dxf file using autocad or draftsight
-### using following command line to generate kicad_mod
-python dxf2kicad_mode "Your-dxf-file-name-here" > "your kicad_mod file.kicad_mod"
+## Layers
+
+Each layer is handled seperately, the layer name is converted to a layer name in the KiCad footprint file.
+
+## Samples
+
+See `tests` for some examples.
+
+## Limitations
+* Supports LINE, ARC, POLYLINE and LWPOLYLINE
+* each line must connect with another line or arc's beginning or end point to within 0.025mm
+* if there are lines with coincident end points, the algorithm may fail to identify polygons correctly
+
+## How to use
+### Install Python 3.9
+
+See https://www.python.org/downloads/.
+
+### Install ezdxf
+
+`pip install ezdxf`
+
+### Get a copy of dxf2kicad_mod
+
+```
+> git clone https://github.com/bobc/dxf2kicad_mod.git
+> cd dxf2kicad_mod
+```
+
+### Create a DXF file
+
+Use your favorite CAD to tool to create a DXF file
+
+### Generate KiCad footprint
+
+Use following command line to generate footprint
+
+`python dxf2kicad_mod.py \<dxf_file_name\> \<footprint_file.kicad_mod\>`
+
+### Add to KiCad
+
+Add the folder containing the footprint to KiCad's Footprint Library Table.

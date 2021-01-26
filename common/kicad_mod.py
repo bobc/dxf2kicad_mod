@@ -57,7 +57,7 @@ class KicadMod(object):
 
         if not filename:
             self.name = None
-            self.layer = 'through_hole'
+            self.layer = 'F.Cu'
             self.locked = False
             self.description = ''
             self.tags = ''
@@ -67,7 +67,7 @@ class KicadMod(object):
             self.solder_mask_margin = 0
             self.solder_paste_margin = 0
             self.solder_paste_ratio = 0
-            self.attribute = 'virtual'
+            self.attribute = 'through_hole'
             self.reference = self._new_text ('reference', 'REF**')
             self.value = self._new_text ('value', 'VAL')
             self.userText = []
@@ -93,7 +93,7 @@ class KicadMod(object):
         self.name = str(self.sexpr_data[1])
 
         # module layer
-        self.layer = self._getValue('layer', 'through_hole', 2)
+        self.layer = self._getValue('layer', 'F.Cu', 2)
 
         # locked flag
         self.locked = self._getValue('locked', False, 2)

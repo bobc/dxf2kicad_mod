@@ -1,17 +1,47 @@
-# refer to http://pythonhosted.org/dxfgrabber/
+# ===========================================================================
+# 
+# Convert DXF file to KiCad footprint 
+# 
+# Derived from https://github.com/pandysong/dxf2kicad_mod
 #
-# Note that there must not be any line or shape overlapped
+# ===========================================================================
+#
+# Copyright (C) 2018  pandy song
+#
+# Modifications  Copyright (c) 2018-2021 Bob Cousins 
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
 
-# Add support for LWPOLYLINE
-# Bob Cousins 2018-02
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# ===========================================================================
+#
+# This has diverged a lot from the original. 
+# - add support for more entity types
+# - clean up arg parsing, debug output
+# - unit conversion (mils)
+# - use ezdxf instead of dxfgrabber
+# - use semi-standard kicad-library-utils for writing KiCad footprint
+#
+# ===========================================================================
 
 import argparse
-import dxfgrabber
-import dxfgrabber.dxfentities
+import ezdxf
+from ezdxf.math import Vec3
 from math import *
 import math
 import sys
 import os
+import json
 from enum import Enum
 
 common = os.path.abspath(os.path.join(sys.path[0], 'common'))
@@ -23,13 +53,38 @@ from kicad_sym import *
 
 
 class Units(Enum):
-    MM = 0
-    MIL = 1
+    MM = "mm"
+    MIL = "mil"
 
 # by default mm, will be converted to Mil if Mil selected
 distance_error = 0.025
 min_line_width = 0.2
-g_units = Units.MM
+
+
+class Settings(object):
+    def __init__(self, dct=None):
+        if dct:
+            self.units = dct.get('units', "mm")
+            self.layers = dct.get('layer', {"0":"F.Cu"} )
+        else:
+            self.units = "mm"
+            self.layers = {"0":"F.Cu"}
+
+
+    def save_to_file (cls, filename):
+        json_data = json.dumps(cls, default=lambda o: o.__dict__, indent=4) 
+        with open(filename, 'w') as file:
+            file.write(json_data) 
+
+    @classmethod
+    def load_from_file (cls, filename):
+        try:
+            with open(filename, 'r') as file:
+                json_data = file.read()
+                return Settings(json.loads(json_data)) 
+        except Exception as ex:
+            print ("error reading settings file {} {}".format(filename, ex, file=sys.stderr))
+            return Settings()
 
 def debug_print (s):
     if args.verbose and args.verbose>1:
@@ -43,12 +98,12 @@ def to_mil (val):
     return val * 1000 / 25.4
 
 def to_mm (val):
-    if g_units == Units.MIL:
+    if settings.units == Units.MIL:
         return val * 0.0254
     return val
 
 def pt_to_mm (pt):
-    if g_units == Units.MIL:
+    if settings.units == Units.MIL:
         return [pt[0] * 0.0254, pt[1] * 0.0254]
     return pt
 
@@ -120,30 +175,63 @@ def find_center(start, end, angle):
 
 #
 def get_start_end_pts(entity):
-    if "LINE" == entity.dxftype:
-        debug_print("LINE {} {}".format(entity.start, entity.end))
-        return (entity.start, entity.end)
+    if "LINE" == entity.dxf.dxftype:
+        start = get_point(entity.dxf.start)
+        end = get_point(entity.dxf.end)
+        debug_print("LINE {} {}".format(start, end))
+        return (start, end)
 
-    elif "ARC" == entity.dxftype:
-        start = (entity.center[0] + entity.radius * math.cos(radians(entity.start_angle)),
-              entity.center[1] + entity.radius * math.sin(radians(entity.start_angle)), 0)
-        end = (entity.center[0] + entity.radius * math.cos(radians(entity.end_angle)),
-            entity.center[1] + entity.radius * math.sin(radians(entity.end_angle)), 0)
+    elif "ARC" == entity.dxf.dxftype:
+        center = get_point (entity.dxf.center)
+        start = (center[0] + entity.dxf.radius * math.cos(radians(entity.dxf.start_angle)),
+              center[1] + entity.dxf.radius * math.sin(radians(entity.dxf.start_angle)), 0)
+        end = (center[0] + entity.dxf.radius * math.cos(radians(entity.dxf.end_angle)),
+            center[1] + entity.dxf.radius * math.sin(radians(entity.dxf.end_angle)), 0)
         debug_print("ARC {} {}".format(start, end))
         return (start,end)
 
-    elif entity.dxftype in ["LWPOLYLINE", "POLYLINE"]:
-        return (entity.points[0], entity.points[-1])
+    elif entity.dxf.dxftype in ["LWPOLYLINE", "POLYLINE"]:
+        ety_points = get_points (entity)
+        return (ety_points[0], ety_points[-1])
 
     else:
-        print("[Error]: Unexpected dxftype {}".format(entity.dxftype), file=sys.stderr)
+        print("[Error]: Unexpected dxftype {}".format(entity.dxf.dxftype), file=sys.stderr)
 
 
 def is_poly (entity):
-    if entity.dxftype in ['LWPOLYLINE', "POLYLINE"]:
+    if entity.dxf.dxftype in ['LWPOLYLINE', "POLYLINE"]:
         return True
     else:
         return False
+
+def get_point (vec : Vec3):
+    return [vec.x, vec.y]
+
+def get_points (entity):
+    if entity.dxf.dxftype == "LWPOLYLINE":
+        points = []
+        for pt in entity.get_points('xyb'):
+            # pt is tuple (x,y,bulge)
+            points.append (pt)
+        return points
+
+    elif entity.dxf.dxftype == "POLYLINE":
+        points = []
+        for pt in entity.vertices:
+            # pt is VERTEX
+            # pt.dxf.location is Vec3
+            points.append ([pt.dxf.location.x, pt.dxf.location.y, pt.dxf.bulge])
+        return points
+
+    elif entity.dxf.dxftype == "LINE":
+        return [ get_point(entity.dxf.start), get_point(entity.dxf.end) ]
+
+    elif entity.dxf.dxftype == "ARC":
+        center = get_point (entity.dxf.center)
+        return [center]
+
+    else:
+        raise Exception ("entity {} has no points".format(entity))
 
 def is_poly_closed (poly_points):
     xd = math.fabs(poly_points[0][0] - poly_points[-1][0])
@@ -157,49 +245,48 @@ def is_poly_closed (poly_points):
 def add_points(ety, direction, cur_poly):
 
     points = []
-    if 'LINE' == ety.dxftype:
-        points = [ety.start, ety.end]
+    if 'LINE' == ety.dxf.dxftype:
+        points = get_points (ety)
 
-    elif 'ARC' == ety.dxftype:
+    elif 'ARC' == ety.dxf.dxftype:
 
-        step = 1.0/ety.radius
-        angle = ety.start_angle
+        step = 1.0/ety.dxf.radius
+        angle = ety.dxf.start_angle
+        center = get_point(ety.dxf.center)
 
-        debug_print ("angle {} {}".format( ety.start_angle, ety.end_angle))
+        debug_print ("angle {} {}".format( ety.dxf.start_angle, ety.dxf.end_angle))
 
-        if (ety.start_angle > ety.end_angle):
-            ety.end_angle += 360
+        if (ety.dxf.start_angle > ety.dxf.end_angle):
+            ety.dxf.end_angle += 360
         while True:
-            points.append( (ety.center[0] + ety.radius * math.cos(radians(angle)),
-                            ety.center[1] + ety.radius * math.sin(radians(angle))) )
+            points.append( (center[0] + ety.dxf.radius * math.cos(radians(angle)),
+                            center[1] + ety.dxf.radius * math.sin(radians(angle))) )
             angle +=  step
-
-            if (angle > ety.end_angle):
+            if (angle > ety.dxf.end_angle):
                 break
 
-    elif ety.dxftype in ["LWPOLYLINE", "POLYLINE"]:
-        for j,point in enumerate(ety.points):
-
+    elif ety.dxf.dxftype in ["LWPOLYLINE", "POLYLINE"]:
+        ety_points = get_points(ety)
+        for j,point in enumerate(ety_points):
             #print ("{} {} ".format (j, point))
-
-            if ety.dxftype == "LWPOLYLINE" and j == len(ety.points)-1:
+            if ety.dxf.dxftype == "LWPOLYLINE" and j == len(ety_points)-1:
                 break
 
             #dbg ("%d %2.1f,%2.1f %2.3f" % (j, ety.points[j][0], ety.points[j][1], ety.bulge[j]))
 
-            if ety.bulge[j] == 0:
+            if point[2] == 0:
                 points.append (point)
             else:
-                if ety.bulge[j] < 0:
-                    p2 = ety.points[j]
-                    p1 = ety.points[(j+1) % len(ety.points)]
+                if point[2] < 0:
+                    p2 = ety_points[j]
+                    p1 = ety_points[(j+1) % len(ety_points)]
                 else:
-                    p1 = ety.points[j]
-                    p2 = ety.points[(j+1) % len(ety.points)]
+                    p1 = ety_points[j]
+                    p2 = ety_points[(j+1) % len(ety_points)]
 
                 pl = []
                 if p1[0] != p2[0] and p1[1] != p2[1]:
-                    angle = math.atan(ety.bulge[j]) * 4.0
+                    angle = math.atan(point[2]) * 4.0
                     radius, xc, yc, start_angle, end_angle = find_center(p1, p2, angle)
                     #dbg ("        r=%2.1f c=(%2.1f,%2.1f) sa=%2.1f ea=%2.1f" % (radius, xc, yc, degrees(start_angle), degrees(end_angle)))
                     if end_angle < start_angle:
@@ -230,10 +317,7 @@ def add_points(ety, direction, cur_poly):
 
 
 def get_layer_name (layer):
-    if layer=="0":
-        return "F.Cu"
-    else:
-        return layer
+    return settings.layers.get (layer, layer)
 #
 
 class DxfConverter:
@@ -290,9 +374,10 @@ class DxfConverter:
 
         self.footprint = KicadMod ()
         self.footprint.name = basename
-        self.footprint.description = "x"
-        self.footprint.tags = "x"
+        self.footprint.description = "Converted from " + os.path.basename(footprint_path)
+        self.footprint.tags = "DXF"
         self.footprint.layer = 'F.Cu'
+        self.footprint.attribute = 'virtual'
         self.footprint.reference['layer'] = 'F.SilkS'
         self.footprint.reference['hide'] = True
         self.footprint.reference['pos']['x'] = 0
@@ -306,44 +391,44 @@ class DxfConverter:
 
         print ("Creating {}".format(basename))
 
-        layers = set([entity.layer for entity in dxf.entities])
+        layers = [layer.dxf.name for layer in dxf.layers]
         debug_print ("Layers: {}".format(layers))
 
         self.cur_poly = []
+
+        model_space = dxf.modelspace()
 
         # todo: get drawing extent
 
         for layer in layers:
 
-            #self.not_processed_data = set([entity for entity in dxf.entities if entity.layer == layer])
-            self.layer_data = [entity for entity in dxf.entities if entity.layer == layer]
-
+            self.layer_data = model_space.query ('*[layer =="{}"]'.format(layer))
             self.not_processed_data = []
 
             for entity in self.layer_data:
-                if entity.dxftype in  ["LWPOLYLINE", "POLYLINE"]:
+                if entity.dxf.dxftype in  ["LWPOLYLINE", "POLYLINE"]:
 
-                    verbose_print ("poly {} {} {}".format(entity, len(entity.points), entity.is_closed))
-                    num_points = len(entity.points)
+                    num_points = entity.__len__()
+                    verbose_print ("poly {} {} {}".format(entity, num_points, entity.is_closed))
 
                     # todo: segments may have different widths
-                    if entity.dxftype == "LWPOLYLINE":
+                    if entity.dxf.dxftype == "LWPOLYLINE":
                         num_points -= 1
-                        width = entity.const_width
+                        width = entity.dxf.const_width
                     else:
-                        width = entity.default_start_width
+                        width = entity.dxf.default_start_width
                     width = max(width, min_line_width)
+                    points = get_points(entity)
 
                     if num_points == 2:
                         #print ("simple poly")
                         #todo: handle bulge
-                        line = dxfgrabber.dxfentities.Line ()
-                        line.dxftype = 'LINE'
-                        line.start = entity.points[0]
-                        line.end = entity.points[1]
-                        line.thickness =  max(entity.default_start_width, min_line_width)
+                        start = points[0]
+                        end   = points[1]
+                        line = model_space.add_line (start, end)
+                        line.dxf.thickness =  max(entity.dxf.default_start_width, min_line_width)
                         self.not_processed_data.append (line)
-                        debug_print ("added line {}".format(line.thickness))
+                        debug_print ("added line {}".format(line.dxf.thickness))
                     else:
                         self.cur_poly = []
                         add_points(entity, 1, self.cur_poly)
@@ -357,7 +442,7 @@ class DxfConverter:
                             else:
                                 self.add_lines (self.cur_poly, width, layer)
 
-                elif entity.dxftype in  ["ARC", "LINE"]:
+                elif entity.dxf.dxftype in  ["ARC", "LINE"]:
                     self.not_processed_data.append (entity)
                     verbose_print ("added {}".format(entity))
 
@@ -420,7 +505,7 @@ class DxfConverter:
                         debug_print ("Not Processed Shape: {}".format(len(self.not_processed_data)))
                     else:
                         verbose_print ("unconnected line on layer {}".format (layer))
-                        self.add_lines (self.cur_poly, self.current_shape.thickness, layer)
+                        self.add_lines (self.cur_poly, self.current_shape.dxf.thickness, layer)
 
                         self.cur_poly = []
                         self.start_new_shape(layer)
@@ -439,27 +524,27 @@ class DxfConverter:
 
 #
 def dump_file (dxf):
-    layers = set([entity.layer for entity in dxf.entities])
+    model_space = dxf.modelspace()
+    layers = [layer.dxf.name for layer in dxf.layers]
 
     #print ("Layers: {}".format(layers))
 
     for layer in layers:
+        print ("Layer: {}".format(layer))
 
-        print ("Layers: {}".format(layer))
-
-        layer_data = set([entity for entity in dxf.entities if entity.layer == layer])
+        layer_data = model_space.query ('*[layer =="{}"]'.format(layer))
 
         for entity in layer_data:
-            if entity.dxftype == "ARC":
-                info = "{} {} {} {}".format (entity.center, entity.radius, entity.start_angle, entity.end_angle)
-            elif entity.dxftype == "LINE":
-                info = "{} {}".format(entity.start, entity.end)
-            elif entity.dxftype == "INSERT":
-                info = "{} {}".format(entity.name, entity.scale)
-            elif entity.dxftype == "POLYLINE":
-                info = "closed:{} np:{}".format (entity.is_closed, len(entity.points))
-            elif entity.dxftype == "LWPOLYLINE":
-                info = "closed:{} np:{}".format (entity.is_closed, len(entity.points))
+            if entity.dxf.dxftype == "ARC":
+                info = "{} {} {} {}".format (entity.dxf.center, entity.dxf.radius, entity.dxf.start_angle, entity.dxf.end_angle)
+            elif entity.dxf.dxftype == "LINE":
+                info = "{} {}".format(entity.dxf.start, entity.dxf.end)
+            elif entity.dxf.dxftype == "INSERT":
+                info = "{} {} {}".format(entity.dxf.name, entity.dxf.xscale, entity.dxf.yscale)
+            elif entity.dxf.dxftype == "POLYLINE":
+                info = "closed:{} np:{}".format (entity.is_closed, len(entity))
+            elif entity.dxf.dxftype == "LWPOLYLINE":
+                info = "closed:{} np:{}".format (entity.is_closed, len(entity))
             else:
                 info = ''
             print ("  {} {}".format(entity, info))
@@ -467,6 +552,14 @@ def dump_file (dxf):
 
 if __name__ == '__main__':
 
+    #settings = Settings()
+    #settings.save_to_file("settings.json")
+
+    #settings = Settings.load_from_file ("settings.json")
+
+    settings = Settings()
+
+    #
     parser = argparse.ArgumentParser(description='Convert a DXF file to a KiCad footprint')
     parser.add_argument('DXF_file', help="DXF file")
     parser.add_argument('footprint_file', help="KiCad footprint file name", nargs='?')
@@ -478,11 +571,11 @@ if __name__ == '__main__':
     if os.path.splitext(args.DXF_file)[1].lower() == ".dxf":
 
         if args.units.lower() == "mil":
-            g_units = Units.MIL
+            settings.units = Units.MIL
             distance_error = to_mil (distance_error)
             min_line_width = to_mil (min_line_width)
 
-        dxf = dxfgrabber.readfile(args.DXF_file)
+        dxf = ezdxf.readfile(args.DXF_file)
 
         debug_print ("DXF version : {}".format(dxf.dxfversion))
         debug_print ("Entity Count: {}".format (len(dxf.entities)))
