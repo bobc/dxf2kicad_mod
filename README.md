@@ -1,7 +1,11 @@
 # dxf2kicad_mod
 Create a KiCad footprint from a DXF file
 
-A generated footprint from [a dxf file](test_data.dxf):
+For example, from
+
+![a dxf file](sample_dxf.png):
+
+generate a footprint:
 
 ![footprint sample](sample.png)
 
@@ -32,7 +36,7 @@ See https://www.python.org/downloads/.
 
 ### Install ezdxf
 
-`pip install ezdxf`
+`> pip install ezdxf`
 
 ### Get a copy of dxf2kicad_mod
 
@@ -49,7 +53,7 @@ Use your favorite CAD to tool to create a DXF file
 
 Use following command line to generate footprint
 
-`python dxf2kicad_mod.py \<dxf_file_name\> \<footprint_file.kicad_mod\>`
+`> python dxf2kicad_mod.py <dxf_file_name> <footprint_file.kicad_mod>`
 
 ### Add to KiCad
 

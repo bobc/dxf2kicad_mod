@@ -25,7 +25,7 @@
 #
 # ===========================================================================
 #
-# This has diverged a lot from the original. 
+# This version has diverged a lot from the original. 
 # - add support for more entity types
 # - clean up arg parsing, debug output
 # - unit conversion (mils)
@@ -44,6 +44,8 @@ import os
 import json
 from enum import Enum
 
+from kicad_layers import KicadLayer
+
 common = os.path.abspath(os.path.join(sys.path[0], 'common'))
 if not common in sys.path:
     sys.path.append(common)
@@ -56,19 +58,36 @@ class Units(Enum):
     MM = "mm"
     MIL = "mil"
 
-# by default mm, will be converted to Mil if Mil selected
-distance_error = 0.025
-min_line_width = 0.2
+
+class Point (object):
+    x : float = 0
+    y : float = 0
+    bulge : float = 0
+
+    def __init__ (self, x=0, y=0, pt=None):
+        if type(pt) in [list, tuple]:
+            self.x = pt[0]
+            self.y = pt[1]
+
+    def __str__ (self):
+        return "{:6g}, {:6g}".format (self.x, self.y)
 
 
 class Settings(object):
+    # by default mm, will be converted to Mil if Mil selected
+
     def __init__(self, dct=None):
         if dct:
             self.units = dct.get('units', "mm")
-            self.layers = dct.get('layer', {"0":"F.Cu"} )
+            self.layers = dct.get('layer', {"0":KicadLayer.F_Cu} )
+            self.distance_error = dct.get('distance_error', 0.1)
+            self.min_line_width = dct.get('min_line_width', 0.2)
         else:
             self.units = "mm"
-            self.layers = {"0":"F.Cu"}
+            self.layers = {"0":KicadLayer.F_Cu}
+            self.distance_error = 0.025
+            #self.distance_error = 0.1
+            self.min_line_width = 0.2
 
 
     def save_to_file (cls, filename):
@@ -152,6 +171,11 @@ def clip(subjectPolygon, clipPolygon):
 
     return(outputList)
 
+def distance_between_points (p1, p2):
+    dx = math.fabs(p1[0] - p2[0])
+    dy = math.fabs(p1[1] - p2[1])
+    return math.sqrt (dx*dx + dy*dy)
+
 #
 def find_center(start, end, angle):
 
@@ -234,9 +258,9 @@ def get_points (entity):
         raise Exception ("entity {} has no points".format(entity))
 
 def is_poly_closed (poly_points):
-    xd = math.fabs(poly_points[0][0] - poly_points[-1][0])
-    yd = math.fabs(poly_points[0][1] - poly_points[-1][1])
-    if (xd < distance_error) and (yd < distance_error):
+    dx = math.fabs(poly_points[0][0] - poly_points[-1][0])
+    dy = math.fabs(poly_points[0][1] - poly_points[-1][1])
+    if (dx < settings.distance_error) and (dy < settings.distance_error):
         return True
     else:
         return False
@@ -317,34 +341,61 @@ def add_points(ety, direction, cur_poly):
 
 
 def get_layer_name (layer):
-    return settings.layers.get (layer, layer)
+    if layer in settings.layers:
+        return settings.layers.get (layer, layer)
+    elif layer in KicadLayer.standard_layers:
+        return layer
+    else:
+        return KicadLayer.F_Cu
+
 #
 
 class DxfConverter:
 
     def __init__ (self, dxf):
         self.dxf = dxf
-        self.distance_error = distance_error
         self.footprint = None
 
     def add_poly (self, poly_points, width, layer):
         points = []
         for point in poly_points:
-            #in KiCad Y axis has opposite direction
+            # in KiCad Y axis has opposite direction
             pt_mm = pt_to_mm (point)
             points.append ({'x': round(pt_mm[0],4), 'y':round(-pt_mm[1],4)})
         poly = {'layer':get_layer_name(layer), 'width':to_mm(width), 'pts':points}
 
         self.footprint.polys.append (poly)
 
+    # compatible with v5
     def add_lines (self, poly_points, width, layer):
 
         for j,point in enumerate(poly_points[:-1]):
-            #in KiCad Y axis has opposite direction
+            # in KiCad Y axis has opposite direction
             start = pt_to_mm( [point[0], -point[1]] )
             end = pt_to_mm ( [ poly_points [j + 1][0], -poly_points [j + 1][1] ] )
             self.footprint.addLine(start, end, get_layer_name(layer), to_mm(width) )
 
+    # requires v6?
+    def add_lines_v6 (self, poly_points, width, layer):
+        points = []
+        for point in poly_points:
+            # in KiCad Y axis has opposite direction
+            pt_mm = pt_to_mm (point)
+            points.append ({'x': round(pt_mm[0],4), 'y':round(-pt_mm[1],4)})
+        # width must be > 0
+        poly = {'layer':get_layer_name(layer), 'width':0.001, 'pts':points, 'fill': 'none'}
+
+        self.footprint.polys.append (poly)
+
+
+    def is_near (self, p1, p2):
+        dx = math.fabs(p1[0] - p2[0])
+        dy = math.fabs(p1[1] - p2[1])
+        if (dx < settings.distance_error) and (dy < settings.distance_error):
+            return True
+        else:
+            return False
+        
 
     def start_new_shape (self, layer):
 
@@ -376,14 +427,14 @@ class DxfConverter:
         self.footprint.name = basename
         self.footprint.description = "Converted from " + os.path.basename(footprint_path)
         self.footprint.tags = "DXF"
-        self.footprint.layer = 'F.Cu'
+        self.footprint.layer = KicadLayer.F_Cu
         self.footprint.attribute = 'virtual'
-        self.footprint.reference['layer'] = 'F.SilkS'
+        self.footprint.reference['layer'] = KicadLayer.F_SilkScreen
         self.footprint.reference['hide'] = True
         self.footprint.reference['pos']['x'] = 0
         self.footprint.reference['pos']['y'] = -4
         self.footprint.reference['font']['thickness'] = 0.2
-        self.footprint.value['layer'] = 'F.SilkS'
+        self.footprint.value['layer'] = KicadLayer.F_SilkScreen
         self.footprint.value['hide'] = True
         self.footprint.value['pos']['x'] = 0
         self.footprint.value['pos']['y'] = 4
@@ -402,6 +453,8 @@ class DxfConverter:
 
         for layer in layers:
 
+            verbose_print ("layer {} to {}".format (layer, get_layer_name(layer)))
+
             self.layer_data = model_space.query ('*[layer =="{}"]'.format(layer))
             self.not_processed_data = []
 
@@ -417,7 +470,7 @@ class DxfConverter:
                         width = entity.dxf.const_width
                     else:
                         width = entity.dxf.default_start_width
-                    width = max(width, min_line_width)
+                    width = max(width, settings.min_line_width)
                     points = get_points(entity)
 
                     if num_points == 2:
@@ -426,7 +479,7 @@ class DxfConverter:
                         start = points[0]
                         end   = points[1]
                         line = model_space.add_line (start, end)
-                        line.dxf.thickness =  max(entity.dxf.default_start_width, min_line_width)
+                        line.dxf.thickness =  max(entity.dxf.default_start_width, settings.min_line_width)
                         self.not_processed_data.append (line)
                         debug_print ("added line {}".format(line.dxf.thickness))
                     else:
@@ -454,11 +507,7 @@ class DxfConverter:
             self.start_new_shape(layer)
             debug_print ("Not Processed Shape: {}".format (len(self.not_processed_data)))
 
-            while True:
-
-                if self.pts_next == None:
-                    debug_print("pts_next is None")
-                    break #stop
+            while self.pts_next:
 
                 if is_poly (self.current_shape):
                     debug_print ("cur is poly")
@@ -469,42 +518,53 @@ class DxfConverter:
                 debug_print ("Searching entity which is connected with {}".format(pt))
                 #
                 matched_entity = None
+                nearest_pt = None
+                nearest_dist = math.inf
 
                 for entity in self.not_processed_data:
                     points = get_start_end_pts(entity)
-                    x = points[0][0]
-                    y = points[0][1]
-                    if (math.fabs(x-pt[0]) < self.distance_error) and (math.fabs(y-pt[1]) < self.distance_error):
-                        #matched
+
+                    d = distance_between_points (points[0], pt)
+                    if d < nearest_dist:
+                        nearest_dist = d
+                        nearest_pt = points[0]
+
+                    if self.is_near (points[0], pt):
+                        # matched
                         matched_entity = entity
-                        direction = 1 #from start to end
+                        direction = 1 # from start to end
                         self.pts_next = points[1]
-                        debug_print ("Got the Point {} {}".format(x, y))
+                        debug_print ("Got the Point {}".format(Point(pt=points[0])))
                         break
 
-                    x = points[1][0]
-                    y = points[1][1]
-                    if (math.fabs(x-pt[0]) < self.distance_error) and (math.fabs(y-pt[1]) < self.distance_error):
-                        #matched
+                    d = distance_between_points (points[1], pt)
+                    if d < nearest_dist:
+                        nearest_dist = d
+                        nearest_pt = points[1]
+
+                    if self.is_near (points[1], pt):
+                        # matched
                         matched_entity = entity
-                        direction = -1 #from end to start
+                        direction = -1 # from end to start
                         self.pts_next = points[0]
-                        debug_print ("Got the Point {} {}".format(x, y))
+                        debug_print ("Got the Point {}".format(Point(pt=points[1])))
                         break
 
                 if matched_entity == None:
 
                     debug_print ("No match found, check if we could close the loop")
 
-                    if ( (math.fabs(self.point_to_close[0]-pt[0]) < self.distance_error) and
-                         (math.fabs(self.point_to_close[1]-pt[1]) < self.distance_error) ):
+                    if self.is_near (self.point_to_close, pt):
                         debug_print ("shape closed at {}".format(pt))
                         self.cur_poly.append (pt)
-                        #find next shape
+                        # find next shape
                         self.start_new_shape(layer)
                         debug_print ("Not Processed Shape: {}".format(len(self.not_processed_data)))
+
                     else:
-                        verbose_print ("unconnected line on layer {}".format (layer))
+                        verbose_print ("unconnected line on layer {} at {} - nearest was {} {:.4f}".
+                                       format (layer, Point(pt=self.pts_next), nearest_pt, nearest_dist))
+
                         self.add_lines (self.cur_poly, self.current_shape.dxf.thickness, layer)
 
                         self.cur_poly = []
@@ -552,12 +612,10 @@ def dump_file (dxf):
 
 if __name__ == '__main__':
 
-    #settings = Settings()
-    #settings.save_to_file("settings.json")
 
     #settings = Settings.load_from_file ("settings.json")
-
     settings = Settings()
+    #settings.save_to_file("settings.json")
 
     #
     parser = argparse.ArgumentParser(description='Convert a DXF file to a KiCad footprint')
@@ -570,10 +628,10 @@ if __name__ == '__main__':
 
     if os.path.splitext(args.DXF_file)[1].lower() == ".dxf":
 
-        if args.units.lower() == "mil":
+        if args.units.lower() == Units.MIL:
             settings.units = Units.MIL
-            distance_error = to_mil (distance_error)
-            min_line_width = to_mil (min_line_width)
+            settings.distance_error = to_mil (settings.distance_error)
+            settings.min_line_width = to_mil (settings.min_line_width)
 
         dxf = ezdxf.readfile(args.DXF_file)
 

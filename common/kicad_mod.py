@@ -910,7 +910,7 @@ class KicadMod(object):
 
         """
         Text is formatted like thus:
-        (fp_text <type> <value> (at <x> <y> <R>*) (layer <layer>)
+        (fp_text <type> <value> (at <x> <y> <R>*) (layer <layer>) [hide]
           (effects (font (size <sx> <sy>) (thickness <t>)))
         )
         """
@@ -925,7 +925,11 @@ class KicadMod(object):
         if not rot in [0, None]:
             pos.append(rot)
 
-        se.addItems([text_type, text[text_type], {'at': pos}, {'layer': text['layer']}], newline=False)
+        items = [text_type, text[text_type], {'at': pos}, {'layer': text['layer']}]
+        if text['hide']:
+            items.append ('hide')
+
+        se.addItems(items, newline=False)
 
         tf = text['font']
 
@@ -1019,7 +1023,8 @@ class KicadMod(object):
 
         fp_poly = [
             {'layer': poly['layer']},
-            {'width': poly['width']}
+            {'width': poly['width']},
+            {'fill': poly.get('fill', 'solid')}
             ]
 
         se.addItems(fp_poly, newline=False)
