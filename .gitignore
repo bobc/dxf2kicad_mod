@@ -1,0 +1,6 @@
+*.pyc
+*.suo
+*.bak
+*.save
+Backup/*
+old/*
